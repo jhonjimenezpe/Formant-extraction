@@ -1,0 +1,233 @@
+#################################################################################################################################################
+# Creado por Jhon Jimenez Peña
+# jhon.jimenez@unmsm.edu.pe
+# Es un script que intenta replicar parcialmente a Escudero et al (2009). Para replicar totalmente, necesitamos muchos más tokens
+# Pensado para usarlo con pocos tokens de manera que minimiza la variación intra-token (a diferencia de Escudero et al (2009))
+# REFERENCIA:
+# Escudero, P., Boersma, P., Rauber, A. S., & Bion, R. A. (2009). A cross-dialect 
+# acoustic description of vowels: Brazilian and European Portuguese. The Journal 
+# of the Acoustical Society of America, 126(3), 1379-1393.
+################################################################################################################################################
+form Analisis formantes vocálicos
+    comment Directorio donde están los .wav y .TextGrid:
+    sentence Directorio C:\Tus_Audios
+    comment Configuración de análisis:
+    comment Techo base (Sugerido: Mujeres 5500, Hombres 5000):
+    real Techo_base_Hz 5500
+    sentence Vocales_objetivo a e i o u
+    positive Tier_de_vocales 1
+    comment Nivel de confianza de la elipse (ej. 2 para ~86.5%, 1 para ~68%):
+    real Desviaciones_estandar 2.0
+    comment Límites del gráfico de dispersión (Praat Picture):
+    real F2_max_Hz 3000
+    real F2_min_Hz 500
+    real F1_max_Hz 900
+    real F1_min_Hz 200
+endform
+
+if right$(directorio$, 1) <> "\" and right$(directorio$, 1) <> "/"
+    directorio$ = directorio$ + "/"
+endif
+
+# --- PARSEAR LAS VOCALES OBJETIVO (A PRUEBA DE FALLOS) ---
+n_vocs = 0
+longitud_obj = length(vocales_objetivo$)
+palabra_actual$ = ""
+
+for c from 1 to longitud_obj
+    char$ = mid$(vocales_objetivo$, c, 1)
+    if char$ <> " "
+        palabra_actual$ = palabra_actual$ + char$
+    else
+        if palabra_actual$ <> ""
+            n_vocs = n_vocs + 1
+            voc$[n_vocs] = palabra_actual$
+            palabra_actual$ = ""
+        endif
+    endif
+endfor
+if palabra_actual$ <> ""
+    n_vocs = n_vocs + 1
+    voc$[n_vocs] = palabra_actual$
+endif
+# ---------------------------------------------------------
+
+nombre_tabla$ = "Resultados_Formantes_Optimizados"
+Create Table with column names: nombre_tabla$, 0, "hablante archivo vocal duracion formante_1 formante_2 techo_optimo"
+
+Create Strings as file list: "lista_wavs", directorio$ + "*.wav"
+num_archivos = Get number of strings
+
+for i from 1 to num_archivos
+    selectObject: "Strings lista_wavs"
+    archivo_wav$ = Get string: i
+    nombre_base$ = archivo_wav$ - ".wav"
+    archivo_tg$ = nombre_base$ + ".TextGrid"
+    
+    if fileReadable (directorio$ + archivo_tg$)
+        hablante$ = nombre_base$
+        
+        Read from file: directorio$ + archivo_wav$
+        sonido_orig = selected("Sound")
+        sonido_resampled = Resample: 16000, 50
+        
+        Read from file: directorio$ + archivo_tg$
+        tg = selected("TextGrid")
+        
+        selectObject: tg
+        num_intervalos = Get number of intervals: tier_de_vocales
+        
+        for j from 1 to num_intervalos
+            selectObject: tg
+            etiqueta$ = Get label of interval: tier_de_vocales, j
+            etiqueta_limpia$ = replace$(etiqueta$, " ", "", 0)
+            
+            if etiqueta_limpia$ <> ""
+                
+                es_objetivo = 0
+                for obj_i from 1 to n_vocs
+                    if voc$[obj_i] == etiqueta_limpia$
+                        es_objetivo = 1
+                    endif
+                endfor
+                
+                if es_objetivo == 1
+                    inicio = Get start time of interval: tier_de_vocales, j
+                    fin = Get end time of interval: tier_de_vocales, j
+                    duracion = fin - inicio
+                    
+                    inicio_40 = inicio + (duracion * 0.3)
+                    fin_40 = inicio + (duracion * 0.7)
+                    
+                    selectObject: sonido_resampled
+                    porcion_vocal = Extract part: inicio_40, fin_40, "rectangular", 1, "no"
+                    
+                    mejor_techo = 0
+                    min_varianza = 99999999
+                    mejor_f1 = 0
+                    mejor_f2 = 0
+                    
+                    f1_rescate = 0
+                    f2_rescate = 0
+                    techo_rescate = 0
+                    
+                    rango_inicio = techo_base_Hz - 1000
+                    for c from 0 to 200
+                        techo_actual = rango_inicio + (c * 10)
+                        
+                        selectObject: porcion_vocal
+                        formant_temp = To Formant (burg): 0, 5, techo_actual, 0.025, 50
+                        
+                        f1_mean = Get mean: 1, 0, 0, "hertz"
+                        f2_mean = Get mean: 2, 0, 0, "hertz"
+                        f1_std = Get standard deviation: 1, 0, 0, "hertz"
+                        f2_std = Get standard deviation: 2, 0, 0, "hertz"
+                        
+                        if f1_mean <> undefined and f2_mean <> undefined
+                            if f1_rescate == 0
+                                f1_rescate = f1_mean
+                                f2_rescate = f2_mean
+                                techo_rescate = techo_actual
+                            endif
+                            
+                            if f1_std <> undefined and f2_std <> undefined
+                                varianza_actual = ((f1_std / f1_mean)^2) + ((f2_std / f2_mean)^2)
+                            else
+                                varianza_actual = 999 
+                            endif
+                            
+                            if varianza_actual < min_varianza
+                                min_varianza = varianza_actual
+                                mejor_techo = techo_actual
+                                mejor_f1 = f1_mean
+                                mejor_f2 = f2_mean
+                            endif
+                        endif
+                        Remove
+                    endfor
+                    
+                    selectObject: porcion_vocal
+                    Remove
+                    
+                    if mejor_f1 == 0 and f1_rescate > 0
+                        mejor_f1 = f1_rescate
+                        mejor_f2 = f2_rescate
+                        mejor_techo = techo_rescate
+                    endif
+                    
+                    if mejor_f1 > 0
+                        selectObject: "Table " + nombre_tabla$
+                        Append row
+                        filas = Get number of rows
+                        Set string value: filas, "hablante", hablante$
+                        Set string value: filas, "archivo", archivo_wav$
+                        Set string value: filas, "vocal", etiqueta_limpia$
+                        Set numeric value: filas, "duracion", duracion
+                        Set numeric value: filas, "formante_1", mejor_f1
+                        Set numeric value: filas, "formante_2", mejor_f2
+                        Set numeric value: filas, "techo_optimo", mejor_techo
+                    endif
+                endif
+            endif
+        endfor
+        
+        selectObject: sonido_orig, sonido_resampled, tg
+        Remove
+    endif
+endfor
+
+selectObject: "Strings lista_wavs"
+Remove
+
+# 6. Guardar la tabla
+selectObject: "Table " + nombre_tabla$
+Save as comma-separated file: directorio$ + "Tabla_Formantes_Optimizados.csv"
+
+# 7. GENERAR LA CARTA DE FORMANTES
+Erase all
+Select outer viewport: 0, 6, 0, 6
+
+# USANDO VARIABLES DINÁMICAS DEL FORMULARIO
+Axes: f2_max_Hz, f2_min_Hz, f1_max_Hz, f1_min_Hz
+Marks bottom every: 1, 500, "yes", "yes", "yes"
+Marks left every: 1, 100, "yes", "yes", "yes"
+Text bottom: "yes", "F2 (Hz)"
+Text left: "yes", "F1 (Hz)"
+Text top: "yes", "Scatter plot"
+
+# Dibujar las vocales encontradas en nuestra lista segura
+for v from 1 to n_vocs
+    selectObject: "Table " + nombre_tabla$
+    Extract rows where column (text): "vocal", "is equal to", voc$[v]
+    subtabla_vocal = selected("Table")
+    
+    filas_vocal = Get number of rows
+    if filas_vocal >= 1
+        
+        Font size: 14
+        for r from 1 to filas_vocal
+            f1_val = Get value: r, "formante_1"
+            f2_val = Get value: r, "formante_2"
+            Text: f2_val, "Centre", f1_val, "Half", voc$[v]
+        endfor
+        
+        if filas_vocal > 2
+            Dotted line
+            # COMANDO MAESTRO SINCRONIZADO DINÁMICAMENTE:
+            Draw ellipses: "formante_2", f2_max_Hz, f2_min_Hz, "formante_1", f1_max_Hz, f1_min_Hz, "vocal", desviaciones_estandar, 0, "no"
+            Solid line
+        endif
+        
+    endif
+    
+    selectObject: subtabla_vocal
+    Remove
+endfor
+
+# --- LIMPIEZA TOTAL FINAL ---
+selectObject: "Table " + nombre_tabla$
+Remove
+
+# Límpieza y presentación final de información
+clearinfo
+printline Proceso terminado. Tabla guardada y gráfica generada con éxito.
